@@ -325,6 +325,13 @@ impl<'a> AppState<'a> {
             Vector2::new(text_width as f32, text_width as f32),
             Color::MEDIUMVIOLETRED,
         );
+        d.draw_text(
+            "Press ENTER to start",
+            (SCREEN_DIMENSIONS.0 / 2) - 61,
+            (SCREEN_DIMENSIONS.1 / 2) + 10,
+            20,
+            Color::BLACK,
+        );
     }
 
     fn draw_game_over<T: RaylibDraw>(&self, d: &mut T, text_width: i32) {
@@ -332,7 +339,7 @@ impl<'a> AppState<'a> {
         d.draw_text_centered("GAME OVER", 30, tw, Color::MEDIUMVIOLETRED);
         d.draw_text(
             "Press R to restart",
-            (SCREEN_DIMENSIONS.0 / 2) - 20,
+            (SCREEN_DIMENSIONS.0 / 2) - 61,
             (SCREEN_DIMENSIONS.1 / 2) + 10,
             20,
             Color::BLACK,
