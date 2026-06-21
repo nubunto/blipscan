@@ -228,7 +228,7 @@ enum GamePhase {
 // - advances times
 // Pretty much the main game loop that connects all the entities.
 struct AppState<'a> {
-    rng: rand::rngs::ThreadRng,
+    rng: &'a mut rand::rngs::ThreadRng,
     max_blips_per_turn: i32,
     blip_timer: Timer,
     new_blip_pulse: Pulse,
@@ -244,13 +244,13 @@ struct AppState<'a> {
     lives: i32,
     phase: GamePhase,
 
-    radar: Radar,
+    radar: &'a mut Radar,
 }
 
 impl<'a> AppState<'a> {
     pub fn new(
-        trng: rand::rngs::ThreadRng,
-        radar: Radar,
+        trng: &'a mut rand::rngs::ThreadRng,
+        radar: &'a mut Radar,
         new_blip_sound: Sound<'a>,
         dead_blip_sound: Sound<'a>,
         killed_blip_sound: Vec<Sound<'a>>,
@@ -366,7 +366,9 @@ impl<'a> AppState<'a> {
     pub fn update(&mut self, rl: &mut RaylibHandle, dt: f32) {
         match self.phase {
             GamePhase::Start => {
-                if rl.is_key_pressed(KeyboardKey::KEY_ENTER) {
+                if rl.is_key_pressed(KeyboardKey::KEY_ENTER)
+                    || rl.is_mouse_button_pressed(MouseButton::MOUSE_BUTTON_LEFT)
+                {
                     self.phase = GamePhase::Play;
                 }
                 return;
@@ -460,8 +462,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // game_loop::run requires a 'static closure
     // so we need to leak this shit here
     // its fine, OS reclaims it on native and browser reclaims it on tab closed
-    let ra = Box::leak(Box::new(RaylibAudio::init_audio_device()?));
-    let radar = Radar::new(Vector2::one(), 105.);
+    let ra = RaylibAudio::init_audio_device()?;
+    let mut radar = Radar::new(Vector2::one(), 105.);
 
     let (screen_width, screen_height) = { (rl.get_screen_width(), rl.get_screen_height()) };
 
@@ -473,10 +475,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         rl.load_render_texture(&thread, screen_width as u32, screen_height as u32)?;
     // then we render the above 2 textures onto this texture, with the 1st post-processing pass...
     let mut final_render_texture =
-        rl.load_render_texture(&thread, screen_width as u32, screen_height as u32)?;
-
-    // and THEN we apply the 2nd pass of the post-processing
-    let mut pass1_render_texture =
         rl.load_render_texture(&thread, screen_width as u32, screen_height as u32)?;
 
     // raylib's web build targets OpenGL ES 2.0 (WebGL), which wants GLSL ES
@@ -493,154 +491,127 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         None,
         Some(&format!("{GLSL_DIR}/circular_clipping.fs")),
     )?;
-    let mut shader_crt = rl.load_shader(&thread, None, Some(&format!("{GLSL_DIR}/crt.fs")))?;
-    let mut shader_vignette =
-        rl.load_shader(&thread, None, Some(&format!("{GLSL_DIR}/vignette.fs")))?;
-
+    let mut shader_crt_vig = rl.load_shader(
+        &thread,
+        None,
+        Some(&format!("{GLSL_DIR}/combined_crt_vig.fs")),
+    )?;
     let mut post_processing_shaders_enabled = true;
 
-    let rng = rand::rngs::ThreadRng::default();
+    let mut rng = rand::rngs::ThreadRng::default();
 
     let circle_center_loc = shader_circular_clipping.get_shader_location("circleCenter");
     let circle_radius_loc = shader_circular_clipping.get_shader_location("radius");
     let screen_width_loc = shader_circular_clipping.get_shader_location("screenW");
     let screen_height_loc = shader_circular_clipping.get_shader_location("screenH");
 
-    game_loop::run(rl, thread, 60, {
-        let new_blip_sound = ra.new_sound("assets/switch31.wav")?;
-        let dead_blip_sound = ra.new_sound("assets/rollover6.wav")?;
-        let killed_blip_sound = vec![
-            ra.new_sound("assets/mouseclick1.wav")?,
-            ra.new_sound("assets/mouserelease1.wav")?,
-        ];
-        let mut app_state = AppState::new(
-            rng,
-            radar,
-            new_blip_sound,
-            dead_blip_sound,
-            killed_blip_sound,
-        );
+    let new_blip_sound = ra.new_sound("assets/switch31.wav")?;
+    let dead_blip_sound = ra.new_sound("assets/rollover6.wav")?;
+    let killed_blip_sound = vec![
+        ra.new_sound("assets/mouseclick1.wav")?,
+        ra.new_sound("assets/mouserelease1.wav")?,
+    ];
+    let mut app_state = AppState::new(
+        &mut rng,
+        &mut radar,
+        new_blip_sound,
+        dead_blip_sound,
+        killed_blip_sound,
+    );
 
-        move |rl, thread| {
-            let dt = rl.get_frame_time();
-            // poor man's hot reload of shaders
-            // circular clipping was a bit hard, as you can see
-            if rl.is_key_pressed(KeyboardKey::KEY_SPACE) {
-                post_processing_shaders_enabled = !post_processing_shaders_enabled;
-                if let Ok(s) = rl
+    while !rl.window_should_close() {
+        let dt = rl.get_frame_time();
+        // poor man's hot reload of shaders
+        // circular clipping was a bit hard, as you can see
+        if rl.is_key_pressed(KeyboardKey::KEY_SPACE) {
+            post_processing_shaders_enabled = !post_processing_shaders_enabled;
+            if let Ok(s) = rl
+                .load_shader(
+                    &thread,
+                    None,
+                    Some(&format!("{GLSL_DIR}/circular_clipping.fs")),
+                )
+                .inspect_err(|err| println!("circular: {}", err))
+            {
+                shader_circular_clipping = s;
+            }
+            if post_processing_shaders_enabled
+                && let Ok(s) = rl
                     .load_shader(
-                        thread,
+                        &thread,
                         None,
-                        Some(&format!("{GLSL_DIR}/circular_clipping.fs")),
+                        Some(&format!("{GLSL_DIR}/combined_crt_vig.fs")),
                     )
-                    .inspect_err(|err| println!("circular: {}", err))
-                {
-                    shader_circular_clipping = s;
-                }
-                if post_processing_shaders_enabled {
-                    if let Ok(s) = rl
-                        .load_shader(thread, None, Some(&format!("{GLSL_DIR}/crt.fs")))
-                        .inspect_err(|err| println!("crt: {}", err))
-                    {
-                        shader_crt = s;
-                    }
-
-                    if let Ok(s) = rl
-                        .load_shader(thread, None, Some(&format!("{GLSL_DIR}/vignette.fs")))
-                        .inspect_err(|err| println!("vig: {}", err))
-                    {
-                        shader_vignette = s;
-                    }
-                }
+                    .inspect_err(|err| println!("crt: {}", err))
+            {
+                shader_crt_vig = s;
             }
+        }
 
-            app_state.update(rl, dt);
+        app_state.update(&mut rl, dt);
 
+        if matches!(app_state.phase, GamePhase::Play) {
+            rl.hide_cursor();
+            shader_circular_clipping.set_shader_value(circle_center_loc, app_state.radar.center);
+            shader_circular_clipping.set_shader_value(circle_radius_loc, app_state.radar.radius);
+            shader_circular_clipping.set_shader_value(screen_width_loc, screen_width as f32);
+            shader_circular_clipping.set_shader_value(screen_height_loc, screen_height as f32);
+        }
+
+        rl.draw_texture_mode(&thread, &mut app_render_texture, |mut d| {
+            d.clear_background(Color::RAYWHITE);
+
+            let title_text_width = d.measure_text(TITLE, FONT_SIZE);
+            let gameover_text_width = d.measure_text(GAME_OVER, FONT_SIZE);
+            app_state.draw(&mut d, title_text_width, gameover_text_width);
+        });
+
+        rl.draw_texture_mode(&thread, &mut blips_render_texture, |mut d| {
+            d.clear_background(Color::BLANK);
             if matches!(app_state.phase, GamePhase::Play) {
-                rl.hide_cursor();
-                shader_circular_clipping
-                    .set_shader_value(circle_center_loc, app_state.radar.center);
-                shader_circular_clipping
-                    .set_shader_value(circle_radius_loc, app_state.radar.radius);
-                shader_circular_clipping.set_shader_value(screen_width_loc, screen_width as f32);
-                shader_circular_clipping.set_shader_value(screen_height_loc, screen_height as f32);
-            }
-
-            rl.draw_texture_mode(thread, &mut app_render_texture, |mut d| {
-                d.clear_background(Color::RAYWHITE);
-
-                let title_text_width = d.measure_text(TITLE, FONT_SIZE);
-                let gameover_text_width = d.measure_text(GAME_OVER, FONT_SIZE);
-                app_state.draw(&mut d, title_text_width, gameover_text_width);
-            });
-
-            rl.draw_texture_mode(thread, &mut blips_render_texture, |mut d| {
-                d.clear_background(Color::BLANK);
-                if matches!(app_state.phase, GamePhase::Play) {
-                    for blip in &app_state.blips {
-                        blip.draw(&mut d);
-                    }
+                for blip in &app_state.blips {
+                    blip.draw(&mut d);
                 }
-            });
+            }
+        });
 
-            rl.draw_texture_mode(thread, &mut final_render_texture, |mut d| {
+        rl.draw_texture_mode(&thread, &mut final_render_texture, |mut d| {
+            d.draw_texture_rec(
+                &app_render_texture,
+                Rectangle::new(0., 0., screen_width as f32, -screen_height as f32),
+                Vector2::new(0., 0.),
+                Color::WHITE,
+            );
+            d.draw_shader_mode(&mut shader_circular_clipping, |mut d| {
                 d.draw_texture_rec(
-                    &app_render_texture,
+                    &blips_render_texture,
                     Rectangle::new(0., 0., screen_width as f32, -screen_height as f32),
                     Vector2::new(0., 0.),
                     Color::WHITE,
                 );
-                d.draw_shader_mode(&mut shader_circular_clipping, |mut d| {
-                    d.draw_texture_rec(
-                        &blips_render_texture,
-                        Rectangle::new(0., 0., screen_width as f32, -screen_height as f32),
-                        Vector2::new(0., 0.),
-                        Color::WHITE,
-                    );
-                });
             });
+        });
 
-            rl.draw_texture_mode(thread, &mut pass1_render_texture, |mut d| {
-                if post_processing_shaders_enabled {
-                    d.draw_shader_mode(&mut shader_crt, |mut d| {
-                        d.draw_texture_rec(
-                            &final_render_texture,
-                            Rectangle::new(0., 0., screen_width as f32, -screen_height as f32),
-                            Vector2::new(0., 0.),
-                            Color::WHITE,
-                        );
-                    });
-                } else {
+        rl.draw(&thread, |mut d| {
+            if post_processing_shaders_enabled {
+                d.draw_shader_mode(&mut shader_crt_vig, |mut d| {
                     d.draw_texture_rec(
                         &final_render_texture,
                         Rectangle::new(0., 0., screen_width as f32, -screen_height as f32),
                         Vector2::new(0., 0.),
                         Color::WHITE,
                     );
-                }
-            });
-
-            rl.draw(thread, |mut d| {
-                if post_processing_shaders_enabled {
-                    d.draw_shader_mode(&mut shader_vignette, |mut d| {
-                        d.draw_texture_rec(
-                            &pass1_render_texture,
-                            Rectangle::new(0., 0., screen_width as f32, -screen_height as f32),
-                            Vector2::new(0., 0.),
-                            Color::WHITE,
-                        );
-                    });
-                } else {
-                    d.draw_texture_rec(
-                        &pass1_render_texture,
-                        Rectangle::new(0., 0., screen_width as f32, -screen_height as f32),
-                        Vector2::new(0., 0.),
-                        Color::WHITE,
-                    );
-                }
-            });
-        }
-    });
+                });
+            } else {
+                d.draw_texture_rec(
+                    &final_render_texture,
+                    Rectangle::new(0., 0., screen_width as f32, -screen_height as f32),
+                    Vector2::new(0., 0.),
+                    Color::WHITE,
+                );
+            }
+        });
+    }
 
     Ok(())
 }

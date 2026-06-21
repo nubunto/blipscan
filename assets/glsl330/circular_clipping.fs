@@ -15,7 +15,7 @@ void main() {
 
     float dist = distance(uvPixelCoord, circleCenter);
     if (dist > radius) {
-        finalColor = vec4(0., 0., 0., 0.);
+        discard;
     } else {
         float falloff = 1 - (dist/radius);
         finalColor = color * falloff * 3.;
